@@ -16,6 +16,13 @@ from .codec import (
     parse_header,
 )
 from .connection import BeamConnection, build_login_payload, parse_login_payload
+from .node_fetcher import (
+    BODY_FLAG_FULL,
+    BODY_FLAG_NONE,
+    BODY_FLAG_RECOVERY1,
+    BodyFetchPlan,
+    NodeBlockFetcher,
+)
 from .protocol import (
     Address,
     DEFAULT_CONNECT_TIMEOUT,
@@ -46,7 +53,11 @@ from .utils import (
 
 __all__ = [
     "Address",
+    "BODY_FLAG_FULL",
+    "BODY_FLAG_NONE",
+    "BODY_FLAG_RECOVERY1",
     "BeamConnection",
+    "BodyFetchPlan",
     "DEFAULT_CONNECT_TIMEOUT",
     "DEFAULT_IDLE_TIMEOUT",
     "DEFAULT_PEER_TIMEOUT",
@@ -59,6 +70,7 @@ __all__ = [
     "MAC_SIZE",
     "MAX_FRAME_SIZE",
     "MessageType",
+    "NodeBlockFetcher",
     "PROTO_MAGIC",
     "SecureChannel",
     "build_login_payload",
