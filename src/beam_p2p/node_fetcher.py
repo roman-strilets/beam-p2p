@@ -185,28 +185,14 @@ class NodeBlockFetcher:
 
     def fetch_blocks(
         self,
-        *,
-        start_height: int,
-        stop_height: int,
-        plan: BodyFetchPlan | None = None,
+        plan: BodyFetchPlan
     ) -> list[DecodedBlock]:
         """Fetch and deserialize a contiguous block range.
 
-        If *plan* is ``None`` a full-body fetch (no fast-sync flags) is used.
         Pass an explicit :class:`BodyFetchPlan` to control perishable/eternal
         flags and fast-sync horizon parameters.
         """
-        headers = self.request_headers(start_height=start_height, stop_height=stop_height)
-        if plan is None:
-            plan = BodyFetchPlan(
-                start_height=start_height,
-                stop_height=stop_height,
-                flag_perishable=BODY_FLAG_FULL,
-                flag_eternal=BODY_FLAG_FULL,
-                block0=0,
-                horizon_lo1=0,
-                horizon_hi1=0,
-            )
+        headers = self.request_headers(start_height=plan.start_height, stop_height=plan.stop_height)
         message_type, payload = self.request_body_range_payload(headers=headers, plan=plan)
         if message_type == MessageType.BODY:
             return [deserialize_body_payload(payload, headers[0])]
