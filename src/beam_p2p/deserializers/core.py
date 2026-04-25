@@ -74,6 +74,13 @@ class BufferReader:
     def read_u8(self) -> int:
         return self.read_bytes(1)[0]
 
+    def peek_u8(self) -> int:
+        if self.remaining < 1:
+            raise DeserializationError(
+                f"unexpected end of buffer at offset {self._offset}, need 1 byte"
+            )
+        return self._data[self._offset]
+
     def read_bool(self) -> bool:
         return self.read_u8() != 0
 
