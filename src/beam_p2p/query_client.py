@@ -78,7 +78,6 @@ from .query_models import (
 )
 from .utils import format_address
 
-
 ZERO_HASH = bytes(32)
 
 
@@ -110,6 +109,13 @@ class NodeQueryClient:
         request_timeout: float,
         verbose: bool,
     ) -> None:
+        """
+        Initialize the NodeQueryClient.
+
+        :param connection: The connection to the Beam node.
+        :param request_timeout: The timeout for requests in seconds.
+        :param verbose: Whether to enable verbose logging.
+        """
         self.connection = connection
         host = getattr(connection, "host", "<unknown>")
         port = getattr(connection, "port", 0)
@@ -120,6 +126,11 @@ class NodeQueryClient:
         self.dependent_prefix_depth: int = 0
 
     def _log(self, message: str) -> None:
+        """
+        Log a message if verbose mode is enabled.
+
+        :param message: The message to log.
+        """
         if self.verbose:
             print(message, file=sys.stderr)
 
@@ -127,11 +138,21 @@ class NodeQueryClient:
         self,
         point: EcPoint | tuple[bytes | bytearray | str, bool],
     ) -> tuple[bytes | bytearray | str, bool]:
+        """
+        Coerce a point into a (x, y_flag) tuple.
+
+        :param point: The point to coerce.
+        """
         if isinstance(point, EcPoint):
             return point.x, point.y
         return point
 
     def _coerce_height_pos(self, pos: HeightPos | tuple[int, int]) -> tuple[int, int]:
+        """
+        Coerce a height position into a (height, pos) tuple.
+
+        :param pos: The position to coerce.
+        """
         if isinstance(pos, HeightPos):
             return pos.height, pos.pos
         return pos
@@ -140,11 +161,21 @@ class NodeQueryClient:
         self,
         state_id: SystemStateId | tuple[int, bytes | bytearray | str],
     ) -> tuple[int, bytes | bytearray | str]:
+        """
+        Coerce a state ID into a (number, hash) tuple.
+
+        :param state_id: The state ID to coerce.
+        """
         if isinstance(state_id, SystemStateId):
             return state_id.number, state_id.hash
         return state_id
 
     def _decode_dependent_context_changed(self, payload: bytes) -> None:
+        """
+        Decode a DependentContextChanged message payload.
+
+        :param payload: The raw payload to decode.
+        """
         reader = BufferReader(payload)
         count = reader.read_var_uint()
         self.dependent_contexts = [reader.read_hash32() for _ in range(count)]
@@ -160,7 +191,12 @@ class NodeQueryClient:
         expected: set[MessageType],
         timeout: float | None = None,
     ) -> tuple[MessageType, bytes]:
-        """Receive messages until one of the expected message types arrives."""
+        """
+        Receive messages until one of the expected message types arrives.
+
+        :param expected: A set of message types to wait for.
+        :param timeout: Optional override for the request timeout.
+        """
         effective_timeout = self.request_timeout if timeout is None else timeout
 
         while True:
@@ -205,7 +241,16 @@ class NodeQueryClient:
                         f"[*] {self.endpoint} ignored {message_name(message_type)} ({len(payload)}B)"
                     )
 
-    def _request(self, request_type: MessageType, expected_type: MessageType, payload: bytes) -> bytes:
+    def _request(
+        self, request_type: MessageType, expected_type: MessageType, payload: bytes
+    ) -> bytes:
+        """
+        Send a request and wait for the expected response.
+
+        :param request_type: The type of the request message.
+        :param expected_type: The expected response message type.
+        :param payload: The payload to send with the request.
+        """
         self.connection.send(request_type, payload)
         message_type, response_payload = self.recv_until(expected={expected_type})
         if message_type != expected_type:
@@ -214,15 +259,28 @@ class NodeQueryClient:
             )
         return response_payload
 
-    def set_dependent_context(self, context_hash: bytes | bytearray | str | None) -> None:
-        """Set the dependent context used by subsequent contract and event queries."""
+    def set_dependent_context(
+        self, context_hash: bytes | bytearray | str | None
+    ) -> None:
+        """
+        Set the dependent context used by subsequent contract and event queries.
+
+        :param context_hash: The hash of the context to set, or None to clear it.
+        """
         self.connection.send(
             MessageType.SET_DEPENDENT_CONTEXT,
             encode_optional_hash(context_hash),
         )
 
-    def request_headers(self, *, start_height: int, stop_height: int) -> list[BlockHeader]:
-        """Request a contiguous block-header range."""
+    def request_headers(
+        self, *, start_height: int, stop_height: int
+    ) -> list[BlockHeader]:
+        """
+        Request a contiguous block-header range.
+
+        :param start_height: The starting height of the range.
+        :param stop_height: The ending height of the range.
+        """
         if start_height > stop_height:
             raise ValueError(
                 f"start_height {start_height} must be <= stop_height {stop_height}"
@@ -238,7 +296,9 @@ class NodeQueryClient:
         if message_type != MessageType.HDR_PACK:
             raise RuntimeError(f"expected HdrPack, got {message_name(message_type)}")
 
-        headers = deserialize_header_pack_payloads(payload, self.connection.peer_fork_hashes)
+        headers = deserialize_header_pack_payloads(
+            payload, self.connection.peer_fork_hashes
+        )
         if not headers:
             raise RuntimeError(
                 f"requested header range {start_height}-{stop_height}, node returned no headers"
@@ -267,7 +327,12 @@ class NodeQueryClient:
         headers: Sequence[BlockHeader],
         plan: BodyFetchPlan,
     ) -> tuple[MessageType, bytes]:
-        """Request a contiguous block-body range and return the raw frame."""
+        """
+        Request a contiguous block-body range and return the raw frame.
+
+        :param headers: The sequence of block headers for the requested range.
+        :param plan: The body fetch plan describing the request parameters.
+        """
         if not headers:
             raise ValueError("headers must not be empty")
 
@@ -301,21 +366,35 @@ class NodeQueryClient:
         )
 
     def fetch_blocks(self, plan: BodyFetchPlan) -> list[DecodedBlock]:
-        """Fetch and deserialize a contiguous block range."""
-        headers = self.request_headers(start_height=plan.start_height, stop_height=plan.stop_height)
-        message_type, payload = self.request_body_range_payload(headers=headers, plan=plan)
+        """
+        Fetch and deserialize a contiguous block range.
+
+        :param plan: The body fetch plan describing the range and flags.
+        """
+        headers = self.request_headers(
+            start_height=plan.start_height, stop_height=plan.stop_height
+        )
+        message_type, payload = self.request_body_range_payload(
+            headers=headers, plan=plan
+        )
         if message_type == MessageType.BODY:
             return [deserialize_body_payload(payload, headers[0])]
         return deserialize_body_pack_payloads(payload, headers)
 
     def get_state_summary(self) -> StateSummary:
-        """Fetch the node's on-chain state summary counters."""
+        """
+        Fetch the node's on-chain state summary counters.
+        """
         return deserialize_state_summary_payload(
             self._request(MessageType.GET_STATE_SUMMARY, MessageType.STATE_SUMMARY, b"")
         )
 
     def get_shielded_outputs_at(self, *, height: int) -> int:
-        """Fetch the cumulative number of shielded outputs at a given height."""
+        """
+        Fetch the cumulative number of shielded outputs at a given height.
+
+        :param height: The block height to query.
+        """
         return deserialize_shielded_outputs_at_payload(
             self._request(
                 MessageType.GET_SHIELDED_OUTPUTS_AT,
@@ -331,7 +410,13 @@ class NodeQueryClient:
         aid0: int = 0,
         auto_paginate: bool = True,
     ) -> AssetsListPage:
-        """Fetch asset listings at a given height, optionally following Beam pagination."""
+        """
+        Fetch asset listings at a given height, optionally following Beam pagination.
+
+        :param height: The block height to query.
+        :param aid0: The starting asset ID for the listing.
+        :param auto_paginate: Whether to automatically fetch all pages of assets.
+        """
         current_aid = aid0
         page = deserialize_assets_list_at_payload(
             self._request(
@@ -349,7 +434,9 @@ class NodeQueryClient:
 
         while page.more:
             if page.next_asset_id is None:
-                raise RuntimeError("node returned AssetsListAt more flag without any assets")
+                raise RuntimeError(
+                    "node returned AssetsListAt more flag without any assets"
+                )
 
             page = deserialize_assets_list_at_payload(
                 self._request(
@@ -371,7 +458,12 @@ class NodeQueryClient:
         asset_id: int = 0,
         owner: bytes | bytearray | str = ZERO_HASH,
     ) -> ProofAssetResponse:
-        """Fetch an asset proof by asset id or owner."""
+        """
+        Fetch an asset proof by asset id or owner.
+
+        :param asset_id: The asset ID to query.
+        :param owner: The owner of the asset.
+        """
         return deserialize_proof_asset_payload(
             self._request(
                 MessageType.GET_PROOF_ASSET,
@@ -381,7 +473,12 @@ class NodeQueryClient:
         )
 
     def get_shielded_list(self, *, id0: int, count: int) -> ShieldedListResponse:
-        """Fetch a page of shielded output serials."""
+        """
+        Fetch a page of shielded output serials.
+
+        :param id0: The starting index for the list.
+        :param count: The number of entries to fetch.
+        """
         return deserialize_shielded_list_payload(
             self._request(
                 MessageType.GET_SHIELDED_LIST,
@@ -394,7 +491,11 @@ class NodeQueryClient:
         self,
         point: EcPoint | tuple[bytes | bytearray | str, bool],
     ) -> ProofShieldedOutpResponse:
-        """Fetch a shielded-output proof by serial public key."""
+        """
+        Fetch a shielded-output proof by serial public key.
+
+        :param point: The serial public key point.
+        """
         x, y = self._coerce_point(point)
         return deserialize_proof_shielded_outp_payload(
             self._request(
@@ -408,7 +509,11 @@ class NodeQueryClient:
         self,
         point: EcPoint | tuple[bytes | bytearray | str, bool],
     ) -> ProofShieldedInpResponse:
-        """Fetch a shielded-input proof by spend public key."""
+        """
+        Fetch a shielded-input proof by spend public key.
+
+        :param point: The spend public key point.
+        """
         x, y = self._coerce_point(point)
         return deserialize_proof_shielded_inp_payload(
             self._request(
@@ -424,7 +529,12 @@ class NodeQueryClient:
         *,
         maturity_min: int = 0,
     ) -> ProofUtxoResponse:
-        """Fetch a UTXO proof by commitment."""
+        """
+        Fetch a UTXO proof by commitment.
+
+        :param point: The commitment point.
+        :param maturity_min: The minimum maturity height.
+        """
         x, y = self._coerce_point(point)
         return deserialize_proof_utxo_payload(
             self._request(
@@ -438,8 +548,14 @@ class NodeQueryClient:
             )
         )
 
-    def get_proof_kernel(self, kernel_id: bytes | bytearray | str) -> ProofKernelResponse:
-        """Fetch the legacy long proof for a kernel id."""
+    def get_proof_kernel(
+        self, kernel_id: bytes | bytearray | str
+    ) -> ProofKernelResponse:
+        """
+        Fetch the legacy long proof for a kernel id.
+
+        :param kernel_id: The kernel ID to query.
+        """
         return deserialize_proof_kernel_payload(
             self._request(
                 MessageType.GET_PROOF_KERNEL,
@@ -454,7 +570,12 @@ class NodeQueryClient:
         *,
         fetch: bool = True,
     ) -> ProofKernel2Response:
-        """Fetch a kernel proof with optional embedded kernel data."""
+        """
+        Fetch a kernel proof with optional embedded kernel data.
+
+        :param kernel_id: The kernel ID to query.
+        :param fetch: Whether to fetch and include the kernel data.
+        """
         return deserialize_proof_kernel2_payload(
             self._request(
                 MessageType.GET_PROOF_KERNEL2,
@@ -469,7 +590,12 @@ class NodeQueryClient:
         *,
         with_proof: bool = True,
     ) -> ProofKernel2Response:
-        """Fetch a kernel proof by block position."""
+        """
+        Fetch a kernel proof by block position.
+
+        :param pos: The position of the kernel to query.
+        :param with_proof: Whether to include the proof in the response.
+        """
         height, index = self._coerce_height_pos(pos)
         return deserialize_proof_kernel2_payload(
             self._request(
@@ -484,7 +610,11 @@ class NodeQueryClient:
         )
 
     def get_proof_state(self, number: int) -> ProofStateResponse:
-        """Fetch a hard proof for a block-state number."""
+        """
+        Fetch a hard proof for a block-state number.
+
+        :param number: The block-state number to query.
+        """
         return deserialize_proof_state_payload(
             self._request(
                 MessageType.GET_PROOF_STATE,
@@ -497,12 +627,18 @@ class NodeQueryClient:
         self,
         ids: list[SystemStateId | tuple[int, bytes | bytearray | str]],
     ) -> ProofCommonStateResponse:
-        """Fetch a common-state proof across multiple candidate states."""
+        """
+        Fetch a common-state proof across multiple candidate states.
+
+        :param ids: A list of state IDs to find a common proof for.
+        """
         return deserialize_proof_common_state_payload(
             self._request(
                 MessageType.GET_COMMON_STATE,
                 MessageType.PROOF_COMMON_STATE,
-                encode_get_common_state_payload([self._coerce_state_id(state_id) for state_id in ids]),
+                encode_get_common_state_payload(
+                    [self._coerce_state_id(state_id) for state_id in ids]
+                ),
             )
         )
 
@@ -511,7 +647,11 @@ class NodeQueryClient:
         *,
         lower_bound: int | bytes | bytearray | str = 0,
     ) -> ChainWorkProofResponse:
-        """Fetch a chainwork proof with an optional lower-bound filter."""
+        """
+        Fetch a chainwork proof with an optional lower-bound filter.
+
+        :param lower_bound: The lower bound for the chainwork proof.
+        """
         return deserialize_proof_chain_work_payload(
             self._request(
                 MessageType.GET_PROOF_CHAIN_WORK,
@@ -527,7 +667,13 @@ class NodeQueryClient:
         key_max: bytes = b"",
         skip_min: bool = False,
     ) -> ContractVarsPage:
-        """Enumerate contract key/value pairs in the active dependent context."""
+        """
+        Enumerate contract key/value pairs in the active dependent context.
+
+        :param key_min: The minimum key to start enumeration.
+        :param key_max: The maximum key to end enumeration.
+        :param skip_min: Whether to skip the minimum key itself.
+        """
         return deserialize_contract_vars_payload(
             self._request(
                 MessageType.CONTRACT_VARS_ENUM,
@@ -548,7 +694,14 @@ class NodeQueryClient:
         pos_min: HeightPos | tuple[int, int] = (0, 0),
         pos_max: HeightPos | tuple[int, int] = (0, 0),
     ) -> ContractLogsPage:
-        """Enumerate contract logs in the active dependent context."""
+        """
+        Enumerate contract logs in the active dependent context.
+
+        :param key_min: The minimum key to start enumeration.
+        :param key_max: The maximum key to end enumeration.
+        :param pos_min: The minimum position to start enumeration.
+        :param pos_max: The maximum position to end enumeration.
+        """
         min_height, min_pos = self._coerce_height_pos(pos_min)
         max_height, max_pos = self._coerce_height_pos(pos_max)
         return deserialize_contract_logs_payload(
@@ -565,7 +718,11 @@ class NodeQueryClient:
         )
 
     def get_contract_var(self, key: bytes) -> ContractVarProof:
-        """Fetch one contract key/value proof in the active dependent context."""
+        """
+        Fetch one contract key/value proof in the active dependent context.
+
+        :param key: The key of the contract variable to fetch.
+        """
         return deserialize_contract_var_payload(
             self._request(
                 MessageType.GET_CONTRACT_VAR,
@@ -578,7 +735,11 @@ class NodeQueryClient:
         self,
         pos: HeightPos | tuple[int, int],
     ) -> list:
-        """Fetch a Merkle proof for one contract log entry position."""
+        """
+        Fetch a Merkle proof for one contract log entry position.
+
+        :param pos: The position of the contract log entry.
+        """
         height, index = self._coerce_height_pos(pos)
         return deserialize_contract_log_proof_payload(
             self._request(
@@ -589,7 +750,11 @@ class NodeQueryClient:
         )
 
     def get_events(self, *, height_min: int) -> bytes:
-        """Fetch serialized event data from the node."""
+        """
+        Fetch serialized event data from the node.
+
+        :param height_min: The minimum height to start fetching events from.
+        """
         return deserialize_events_payload(
             self._request(
                 MessageType.GET_EVENTS,
