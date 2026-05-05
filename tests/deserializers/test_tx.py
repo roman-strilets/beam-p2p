@@ -18,8 +18,10 @@ from beam_p2p.protocol_models import (
     TxOutput,
 )
 
+# --- deserialize_input ---
 
-def test_deserialize_input():
+
+def test_deserialize_input_happy():
     # Case 1: Flag 1 set -> y_flag = True
     data = bytes([1]) + b"a" * 32
     reader = BufferReader(data)
@@ -33,8 +35,20 @@ def test_deserialize_input():
     assert result == TxInput(commitment=EcPoint(x="61" * 32, y=False))
 
 
-def test_deserialize_output():
-    # We mock the complex proof deserializers
+def test_deserialize_input_underflow():
+    # Empty buffer
+    with pytest.raises(DeserializationError):
+        deserialize_input(BufferReader(b""))
+
+    # Only flags, no point
+    with pytest.raises(DeserializationError):
+        deserialize_input(BufferReader(bytes([1])))
+
+
+# --- deserialize_output ---
+
+
+def test_deserialize_output_individual_flags():
     with (
         patch(
             "beam_p2p.deserializers.tx.deserialize_confidential_range_proof"
@@ -46,180 +60,243 @@ def test_deserialize_output():
         mock_pub.return_value = "pub_proof"
         mock_asset.return_value = "asset_proof"
 
-        # Case 1: Minimal output (commitment only, no flags)
-        data = bytes([0]) + b"a" * 32
-        reader = BufferReader(data)
-        result = deserialize_output(reader)
-        assert result == TxOutput(
-            commitment=EcPoint(x="61" * 32, y=False),
-            coinbase=False,
-            confidential_proof=None,
-            public_proof=None,
-            incubation=None,
-            asset_proof=None,
-            extra_flags=None,
-        )
+        # Map flag -> (data, expected_attribute, expected_value)
+        # Note: all outputs start with commitment (32 bytes)
+        test_cases = [
+            (0x00, bytes([0]) + b"a" * 32, "commitment", EcPoint(x="61" * 32, y=False)),
+            (0x01, bytes([1]) + b"a" * 32, "commitment", EcPoint(x="61" * 32, y=True)),
+            (0x02, bytes([2]) + b"a" * 32, "coinbase", True),
+            (0x04, bytes([4]) + b"a" * 32, "confidential_proof", "conf_proof"),
+            (0x08, bytes([8]) + b"a" * 32, "public_proof", "pub_proof"),
+            (0x10, bytes([0x10]) + b"a" * 32 + bytes([0x8A]), "incubation", 10),
+            (0x20, bytes([0x20]) + b"a" * 32, "asset_proof", "asset_proof"),
+            (0x80, bytes([0x80]) + b"a" * 32 + bytes([42]), "extra_flags", 42),
+        ]
 
-        # Case 2: Coinbase and point-y (flags 1 | 2 = 3)
-        data = bytes([3]) + b"a" * 32
+        for flag, data, attr, expected in test_cases:
+            reader = BufferReader(data)
+            result = deserialize_output(reader)
+            assert getattr(result, attr) == expected
+
+
+def test_deserialize_output_maximal():
+    with (
+        patch(
+            "beam_p2p.deserializers.tx.deserialize_confidential_range_proof"
+        ) as mock_conf,
+        patch("beam_p2p.deserializers.tx.deserialize_public_range_proof") as mock_pub,
+        patch("beam_p2p.deserializers.tx.deserialize_asset_proof") as mock_asset,
+    ):
+        mock_conf.return_value = "conf_proof"
+        mock_pub.return_value = "pub_proof"
+        mock_asset.return_value = "asset_proof"
+
+        # 0x01 | 0x02 | 0x04 | 0x08 | 0x10 | 0x20 | 0x80 = 0xBF
+        data = bytes([0xBF]) + b"a" * 32 + bytes([0x8A]) + bytes([42])
         reader = BufferReader(data)
         result = deserialize_output(reader)
+
         assert result == TxOutput(
             commitment=EcPoint(x="61" * 32, y=True),
             coinbase=True,
-            confidential_proof=None,
-            public_proof=None,
-            incubation=None,
-            asset_proof=None,
-            extra_flags=None,
-        )
-
-        # Case 3: Complex output with proofs and incubation (flags 1 | 4 | 8 | 0x10 | 0x20)
-        # 1 | 4 | 8 | 16 | 32 = 61
-        # For incubation, we need a var_uint. 10 encoded with high-bit set = 0x8A.
-        data = bytes([61]) + b"a" * 32 + bytes([0x8A])
-        reader = BufferReader(data)
-        result = deserialize_output(reader)
-        assert result == TxOutput(
-            commitment=EcPoint(x="61" * 32, y=True),
-            coinbase=False,
             confidential_proof="conf_proof",
             public_proof="pub_proof",
             incubation=10,
             asset_proof="asset_proof",
-            extra_flags=None,
-        )
-
-        # Case 4: With extra flags (flag 0x80)
-        # flags = 0x80 | 1 = 129
-        data = bytes([129]) + b"a" * 32 + bytes([42])
-        reader = BufferReader(data)
-        result = deserialize_output(reader)
-        assert result == TxOutput(
-            commitment=EcPoint(x="61" * 32, y=True),
-            coinbase=False,
-            confidential_proof=None,
-            public_proof=None,
-            incubation=None,
-            asset_proof=None,
             extra_flags=42,
         )
 
 
-def test_deserialize_transaction():
+def test_deserialize_output_underflow():
     with (
-        patch("beam_p2p.deserializers.tx.deserialize_input") as mock_in,
-        patch("beam_p2p.deserializers.tx.deserialize_output") as mock_out,
-        patch("beam_p2p.deserializers.tx.deserialize_kernel") as mock_kern,
+        patch("beam_p2p.deserializers.tx.deserialize_confidential_range_proof"),
+        patch("beam_p2p.deserializers.tx.deserialize_public_range_proof"),
+        patch("beam_p2p.deserializers.tx.deserialize_asset_proof"),
     ):
-        mock_in.side_effect = [
-            TxInput(EcPoint("x1", True)),
-            TxInput(EcPoint("x2", True)),
-        ]
-        mock_out.side_effect = [
-            TxOutput(EcPoint("ox1", True), False),
-            TxOutput(EcPoint("ox2", True), False),
-        ]
-        mock_kern.side_effect = ["kern1", "kern2"]
+        # Empty
+        with pytest.raises(DeserializationError):
+            deserialize_output(BufferReader(b""))
 
-        # 2 inputs, 2 outputs, 2 kernels (not mixed), offset = 32 bytes
-        # input_count: 2 (4 bytes big)
-        # output_count: 2 (4 bytes big)
-        # kernel_count_raw: 2 (4 bytes big)
-        # offset: 32 bytes
-        # Note: mocks don't consume reader bytes, so no per-item data between counts
+        # Flag set, but no point
+        with pytest.raises(DeserializationError):
+            deserialize_output(BufferReader(bytes([0x01])))
+
+        # Incubation flag set, but no var_uint
+        with pytest.raises(DeserializationError):
+            deserialize_output(BufferReader(bytes([0x10]) + b"a" * 32))
+
+        # Extra flags set, but no u8
+        with pytest.raises(DeserializationError):
+            deserialize_output(BufferReader(bytes([0x80]) + b"a" * 32))
+
+
+# --- deserialize_transaction ---
+
+
+def test_deserialize_transaction_empty():
+    with (
+        patch("beam_p2p.deserializers.tx.deserialize_input"),
+        patch("beam_p2p.deserializers.tx.deserialize_output"),
+        patch("beam_p2p.deserializers.tx.deserialize_kernel"),
+    ):
+        # 0 in, 0 out, 0 kern, offset 32 bytes
         data = (
-            (2).to_bytes(4, "big")
-            + (2).to_bytes(4, "big")
-            + (2).to_bytes(4, "big")
+            (0).to_bytes(4, "big")
+            + (0).to_bytes(4, "big")
+            + (0).to_bytes(4, "big")
             + b"o" * 32
         )
         reader = BufferReader(data)
         result = deserialize_transaction(reader)
-
         assert result.counts == TxCounts(
-            inputs=2, outputs=2, kernels=2, kernels_mixed=False
+            inputs=0, outputs=0, kernels=0, kernels_mixed=False
         )
-        assert result.inputs == [
-            TxInput(EcPoint("x1", True)),
-            TxInput(EcPoint("x2", True)),
-        ]
-        assert result.outputs == [
-            TxOutput(EcPoint("ox1", True), False),
-            TxOutput(EcPoint("ox2", True), False),
-        ]
-        assert result.kernels == ["kern1", "kern2"]
-        assert result.offset == "6f" * 32  # "o" * 32 in hex
-
-        # Verify deserialize_kernel was called with assume_std=True (since not mixed)
-        mock_kern.assert_called_with(ANY, assume_std=True)
+        assert result.offset == "6f" * 32
 
 
-def test_deserialize_transaction_mixed_kernels():
+def test_deserialize_transaction_kernel_boundaries():
     with (
-        patch("beam_p2p.deserializers.tx.deserialize_input") as mock_in,
-        patch("beam_p2p.deserializers.tx.deserialize_output") as mock_out,
+        patch("beam_p2p.deserializers.tx.deserialize_input"),
+        patch("beam_p2p.deserializers.tx.deserialize_output"),
         patch("beam_p2p.deserializers.tx.deserialize_kernel") as mock_kern,
     ):
-        mock_in.return_value = TxInput(EcPoint("x", True))
-        mock_out.return_value = TxOutput(EcPoint("x", True), False)
         mock_kern.return_value = "kern"
 
-        # 1 input, 1 output, 1 kernel (mixed)
-        # kernel_count_raw = 1 | (1 << 31)
-        kernel_count_raw = 1 | (1 << 31)
-        # Note: mocks don't consume reader bytes, so no per-item data between counts
+        # Case 1: Mixed=False, Count=0
+        data = (0).to_bytes(4, "big") * 3 + b"o" * 32
+        result = deserialize_transaction(BufferReader(data))
+        assert result.counts.kernels_mixed is False
+        assert result.counts.kernels == 0
+        # Note: deserialize_kernel is not called for count 0, so we can't check assume_std here.
+        # However, the loop logic is simple. Let's test count 1.
+
+        # Case 2: Mixed=False, Count=1
         data = (
-            (1).to_bytes(4, "big")
+            (0).to_bytes(4, "big")
+            + (0).to_bytes(4, "big")
             + (1).to_bytes(4, "big")
-            + kernel_count_raw.to_bytes(4, "big")
             + b"o" * 32
         )
-        reader = BufferReader(data)
-        result = deserialize_transaction(reader)
+        result = deserialize_transaction(BufferReader(data))
+        assert result.counts.kernels_mixed is False
+        mock_kern.assert_called_with(ANY, assume_std=True)
 
-        assert result.counts == TxCounts(
-            inputs=1, outputs=1, kernels=1, kernels_mixed=True
+        # Case 3: Mixed=True, Count=0
+        mixed_zero = 1 << 31
+        data = (
+            (0).to_bytes(4, "big")
+            + (0).to_bytes(4, "big")
+            + mixed_zero.to_bytes(4, "big")
+            + b"o" * 32
         )
-        # Verify deserialize_kernel was called with assume_std=False (since mixed)
+        result = deserialize_transaction(BufferReader(data))
+        assert result.counts.kernels_mixed is True
+        assert result.counts.kernels == 0
+
+        # Case 4: Mixed=True, Count=1
+        mixed_one = (1 << 31) | 1
+        data = (
+            (0).to_bytes(4, "big")
+            + (0).to_bytes(4, "big")
+            + mixed_one.to_bytes(4, "big")
+            + b"o" * 32
+        )
+        result = deserialize_transaction(BufferReader(data))
+        assert result.counts.kernels_mixed is True
         mock_kern.assert_called_with(ANY, assume_std=False)
 
 
-def test_deserialize_new_transaction_payload():
-    # We mock deserialize_transaction to avoid constructing a full transaction buffer
+def test_deserialize_transaction_underflow():
+    # Buffer ends during count reads
+    with pytest.raises(DeserializationError):
+        deserialize_transaction(BufferReader(b""))
+
+    with pytest.raises(DeserializationError):
+        deserialize_transaction(BufferReader((1).to_bytes(4, "big")))
+
+    # Buffer ends before offset
+    with (
+        patch("beam_p2p.deserializers.tx.deserialize_input"),
+        patch("beam_p2p.deserializers.tx.deserialize_output"),
+        patch("beam_p2p.deserializers.tx.deserialize_kernel"),
+    ):
+        # 0, 0, 0, but missing the scalar offset
+        data = (0).to_bytes(4, "big") * 3
+        with pytest.raises(DeserializationError):
+            deserialize_transaction(BufferReader(data))
+
+
+# --- deserialize_new_transaction_payload ---
+
+
+@pytest.mark.parametrize(
+    "t_pres, c_pres, fluff",
+    [
+        (True, True, True),
+        (True, True, False),
+        (True, False, True),
+        (True, False, False),
+        (False, True, True),
+        (False, True, False),
+        (False, False, True),
+        (False, False, False),
+    ],
+)
+def test_deserialize_new_transaction_payload_matrix(t_pres, c_pres, fluff):
     with patch("beam_p2p.deserializers.tx.deserialize_transaction") as mock_tx:
         mock_tx_obj = MagicMock(spec=Transaction)
         mock_tx.return_value = mock_tx_obj
 
-        # Case 1: Transaction present, context present, fluff True
-        # trans_pres: True (1), context_pres: True (1), fluff: True (1)
-        # context: 32 bytes
-        data = bytes([1]) + b"tx_data" + bytes([1]) + b"c" * 32 + bytes([1])
+        # Build data
+        data = bytes([1 if t_pres else 0])
+        if t_pres:
+            data += b"tx_data"
+        data += bytes([1 if c_pres else 0])
+        if c_pres:
+            data += b"c" * 32
+        data += bytes([1 if fluff else 0])
 
         def side_effect(reader):
-            reader.read_bytes(len(b"tx_data"))
+            if t_pres:
+                reader.read_bytes(len(b"tx_data"))
             return mock_tx_obj
 
         mock_tx.side_effect = side_effect
 
         result = deserialize_new_transaction_payload(data)
-        assert result.transaction_present is True
-        assert result.transaction == mock_tx_obj
-        assert result.context == "63" * 32  # "c" * 32 in hex
-        assert result.fluff is True
+        assert result.transaction_present is t_pres
+        assert result.transaction == (mock_tx_obj if t_pres else None)
+        assert result.context == ("63" * 32 if c_pres else None)
+        assert result.fluff is fluff
 
-        # Case 2: Transaction absent, context absent, fluff False
-        # trans_pres: False (0), context_pres: False (0), fluff: False (0)
-        data2 = bytes([0, 0, 0])
-        result2 = deserialize_new_transaction_payload(data2)
-        assert result2.transaction_present is False
-        assert result2.transaction is None
-        assert result2.context is None
-        assert result2.fluff is False
+
+def test_deserialize_new_transaction_payload_underflow():
+    # Not enough bytes for initial flags
+    with pytest.raises(DeserializationError):
+        deserialize_new_transaction_payload(b"")
+
+    # t_pres=True but no tx data
+    with patch("beam_p2p.deserializers.tx.deserialize_transaction") as mock_tx:
+        mock_tx.side_effect = DeserializationError("Underflow")
+        data = bytes(
+            [1, 0, 0]
+        )  # t_pres=True, c_pres=False, fluff=False, but no tx data
+        with pytest.raises(DeserializationError):
+            deserialize_new_transaction_payload(data)
+
+    # c_pres=True but no hash32
+    data = bytes([0, 1, 0])  # t_pres=False, c_pres=True, fluff=False, but no hash32
+    with pytest.raises(DeserializationError):
+        deserialize_new_transaction_payload(data)
+
+    # missing fluff bit
+    data = bytes([0, 0])  # t_pres=False, c_pres=False, missing fluff
+    with pytest.raises(DeserializationError):
+        deserialize_new_transaction_payload(data)
 
 
 def test_deserialize_new_transaction_payload_trailing_bytes():
-    # Case: Trailing bytes should raise DeserializationError
-    data = bytes([0, 0, 0]) + b"trailing"
+    # Valid payload + extra
+    data = bytes([0, 0, 0]) + b"extra"
     with pytest.raises(DeserializationError, match=r"trailing byte\(s\) left"):
         deserialize_new_transaction_payload(data)

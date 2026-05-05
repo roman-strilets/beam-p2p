@@ -5,7 +5,7 @@ from __future__ import annotations
 import struct
 from collections.abc import Sequence
 
-from .protocol import Address, MessageType, PROTO_MAGIC
+from .protocol import PROTO_MAGIC, Address, MessageType
 
 
 def _coerce_fixed_bytes(value: bytes | bytearray | str, size: int, label: str) -> bytes:
@@ -53,7 +53,10 @@ def decode_uint(
         return size & 0x7F, 1
 
     count = size & 0x7F
-    return int.from_bytes(buf[offset + 1 : offset + 1 + count], "little"), 1 + count
+    data = buf[offset + 1 : offset + 1 + count]
+    if len(data) < count:
+        raise IndexError("unexpected end of buffer while decoding varuint")
+    return int.from_bytes(data, "little"), 1 + count
 
 
 def encode_height_range(min_height: int, max_height: int) -> bytes:
@@ -244,7 +247,9 @@ def encode_get_shielded_list_payload(*, id0: int, count: int) -> bytes:
     return encode_uint(id0) + encode_uint(count)
 
 
-def encode_get_proof_chain_work_payload(lower_bound: int | bytes | bytearray | str) -> bytes:
+def encode_get_proof_chain_work_payload(
+    lower_bound: int | bytes | bytearray | str,
+) -> bytes:
     """Encode a Beam ``GetProofChainWork`` request payload."""
     if isinstance(lower_bound, int):
         return encode_fixed_uint(lower_bound, 32)
@@ -278,7 +283,11 @@ def encode_contract_vars_enum_payload(
     skip_min: bool = False,
 ) -> bytes:
     """Encode a Beam ``ContractVarsEnum`` request payload."""
-    return encode_byte_buffer(key_min) + encode_byte_buffer(key_max) + encode_bool(skip_min)
+    return (
+        encode_byte_buffer(key_min)
+        + encode_byte_buffer(key_max)
+        + encode_bool(skip_min)
+    )
 
 
 def encode_contract_logs_enum_payload(
