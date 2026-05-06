@@ -102,6 +102,7 @@ from .query_models import (
     SystemStateSequencePrefix,
 )
 from .utils import (
+    contract_locked_funds_key_range,
     contract_shader_key,
     contract_sid_cid_key_range,
     contract_storage_key_range,
@@ -109,6 +110,7 @@ from .utils import (
     format_address,
     format_commitment,
     is_crawlable_address,
+    parse_contract_locked_funds_entry,
     parse_contract_sid_cid_entry,
     parse_contract_id,
     parse_endpoint,
@@ -148,6 +150,7 @@ __all__ = [
     "ContractVarEntry",
     "ContractVarProof",
     "ContractVarsPage",
+    "contract_locked_funds_key_range",
     "contract_shader_key",
     "contract_sid_cid_key_range",
     "contract_storage_key_range",
@@ -215,6 +218,7 @@ __all__ = [
     "format_address",
     "format_commitment",
     "is_crawlable_address",
+    "parse_contract_locked_funds_entry",
     "parse_contract_sid_cid_entry",
     "make_header",
     "message_name",

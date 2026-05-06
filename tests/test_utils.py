@@ -3,11 +3,16 @@ from __future__ import annotations
 import pytest
 
 from beam_p2p.utils import (
+    AMOUNT_BIG_SIZE,
+    ASSET_ID_SIZE,
+    CONTRACT_LOCKED_AMOUNT_TAG,
     CONTRACT_STORAGE_KEY_SUFFIX_MAX_SIZE,
     CONTRACT_SID_CID_TAG,
+    contract_locked_funds_key_range,
     contract_shader_key,
     contract_sid_cid_key_range,
     contract_storage_key_range,
+    parse_contract_locked_funds_entry,
     parse_contract_sid_cid_entry,
     parse_contract_id,
 )
@@ -63,6 +68,54 @@ def test_contract_sid_cid_key_range_covers_live_index() -> None:
     assert key_max == prefix + (b"\xff" * 64)
 
 
+def test_contract_locked_funds_key_range_covers_only_locked_amount_keys() -> None:
+    contract_id = bytes.fromhex("55" * 32)
+
+    key_min, key_max = contract_locked_funds_key_range(contract_id)
+    prefix = contract_id + bytes([CONTRACT_LOCKED_AMOUNT_TAG])
+
+    assert key_min == prefix + (b"\x00" * ASSET_ID_SIZE)
+    assert key_max == prefix + (b"\xff" * ASSET_ID_SIZE)
+
+
+def test_parse_contract_locked_funds_entry_decodes_beam_asset_zero() -> None:
+    contract_id = bytes.fromhex("66" * 32)
+    amount = 987654321
+    key = contract_id + bytes([CONTRACT_LOCKED_AMOUNT_TAG]) + (0).to_bytes(4, "big")
+    value = (0).to_bytes(8, "big") + amount.to_bytes(8, "big")
+
+    parsed_contract_id, asset_id, parsed_amount = parse_contract_locked_funds_entry(
+        key,
+        value,
+    )
+
+    assert parsed_contract_id == contract_id
+    assert asset_id == 0
+    assert parsed_amount == amount
+
+
+def test_parse_contract_locked_funds_entry_decodes_128_bit_amount() -> None:
+    contract_id = bytes.fromhex("77" * 32)
+    asset_id = 42
+    amount_hi = 7
+    amount_lo = 11
+    key = (
+        contract_id
+        + bytes([CONTRACT_LOCKED_AMOUNT_TAG])
+        + asset_id.to_bytes(ASSET_ID_SIZE, "big")
+    )
+    value = amount_hi.to_bytes(8, "big") + amount_lo.to_bytes(8, "big")
+
+    parsed_contract_id, parsed_asset_id, parsed_amount = parse_contract_locked_funds_entry(
+        key,
+        value,
+    )
+
+    assert parsed_contract_id == contract_id
+    assert parsed_asset_id == asset_id
+    assert parsed_amount == (amount_hi << 64) | amount_lo
+
+
 def test_parse_contract_sid_cid_entry_decodes_shader_contract_and_height() -> None:
     shader_id = bytes.fromhex("33" * 32)
     contract_id = bytes.fromhex("44" * 32)
@@ -109,3 +162,26 @@ def test_parse_contract_sid_cid_entry_rejects_wrong_value_length() -> None:
 
     with pytest.raises(ValueError, match="SidCid value must be 8 bytes"):
         parse_contract_sid_cid_entry(key, b"\x00" * 7)
+
+
+def test_parse_contract_locked_funds_entry_rejects_wrong_tag() -> None:
+    key = (b"\x88" * 32) + b"\x02" + (b"\x00" * ASSET_ID_SIZE)
+    value = b"\x00" * AMOUNT_BIG_SIZE
+
+    with pytest.raises(ValueError, match="must use tag"):
+        parse_contract_locked_funds_entry(key, value)
+
+
+def test_parse_contract_locked_funds_entry_rejects_wrong_key_length() -> None:
+    key = (b"\x99" * 32) + bytes([CONTRACT_LOCKED_AMOUNT_TAG]) + (b"\x00" * 3)
+    value = b"\x00" * AMOUNT_BIG_SIZE
+
+    with pytest.raises(ValueError, match="locked-funds key must be"):
+        parse_contract_locked_funds_entry(key, value)
+
+
+def test_parse_contract_locked_funds_entry_rejects_wrong_value_length() -> None:
+    key = (b"\xaa" * 32) + bytes([CONTRACT_LOCKED_AMOUNT_TAG]) + (b"\x00" * ASSET_ID_SIZE)
+
+    with pytest.raises(ValueError, match="locked-funds value must be"):
+        parse_contract_locked_funds_entry(key, b"\x00" * (AMOUNT_BIG_SIZE - 1))

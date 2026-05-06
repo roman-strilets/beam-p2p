@@ -13,10 +13,15 @@ CONTRACT_KEY_TAG_SIZE = 1
 CONTRACT_KEY_MAX_SIZE = 256
 CONTRACT_STORAGE_KEY_SUFFIX_MAX_SIZE = CONTRACT_KEY_TAG_SIZE + CONTRACT_KEY_MAX_SIZE
 CONTRACT_SID_CID_TAG = 16
+CONTRACT_LOCKED_AMOUNT_TAG = 1
+ASSET_ID_SIZE = 4
+AMOUNT_BIG_COMPONENT_SIZE = 8
+AMOUNT_BIG_SIZE = AMOUNT_BIG_COMPONENT_SIZE * 2
 HEIGHT_SIZE = 8
 
 _CONTRACT_SID_CID_PREFIX = (b"\x00" * CONTRACT_ID_SIZE) + bytes([CONTRACT_SID_CID_TAG])
 _CONTRACT_SID_CID_PAYLOAD_SIZE = SHADER_ID_SIZE + CONTRACT_ID_SIZE
+_CONTRACT_LOCKED_FUNDS_PREFIX_SIZE = CONTRACT_ID_SIZE + CONTRACT_KEY_TAG_SIZE
 
 
 def format_address(address: Address) -> str:
@@ -105,6 +110,23 @@ def contract_storage_key_range(
     )
 
 
+def contract_locked_funds_key_range(
+    contract_id: str | bytes | bytearray,
+) -> tuple[bytes, bytes]:
+    """Return the inclusive Beam key range for one contract's locked funds.
+
+    Beam stores locked funds under the key layout
+    ``{contract_id}{tag:LockedAmount}{asset_id_be}``, where ``asset_id_be`` is a
+    4-byte big-endian asset ID.
+    """
+    raw_contract_id = parse_contract_id(contract_id)
+    prefix = raw_contract_id + bytes([CONTRACT_LOCKED_AMOUNT_TAG])
+    return (
+        prefix + (b"\x00" * ASSET_ID_SIZE),
+        prefix + (b"\xff" * ASSET_ID_SIZE),
+    )
+
+
 def contract_sid_cid_key_range() -> tuple[bytes, bytes]:
     """Return the inclusive Beam key range for the live ``(sid, cid)`` index.
 
@@ -149,6 +171,49 @@ def parse_contract_sid_cid_entry(key: bytes, value: bytes) -> tuple[bytes, bytes
     height = int.from_bytes(value, byteorder="big", signed=False)
 
     return shader_id, contract_id, height
+
+
+def parse_contract_locked_funds_entry(
+    key: bytes,
+    value: bytes,
+) -> tuple[bytes, int, int]:
+    """Decode one Beam ``contract_id + LockedAmount + asset_id`` entry."""
+    expected_key_size = _CONTRACT_LOCKED_FUNDS_PREFIX_SIZE + ASSET_ID_SIZE
+    if len(key) != expected_key_size:
+        raise ValueError(
+            "contract locked-funds key must be "
+            f"{expected_key_size} bytes, got {len(key)}"
+        )
+
+    if key[CONTRACT_ID_SIZE] != CONTRACT_LOCKED_AMOUNT_TAG:
+        raise ValueError(
+            "contract locked-funds key must use tag "
+            f"{CONTRACT_LOCKED_AMOUNT_TAG}, got {key[CONTRACT_ID_SIZE]}"
+        )
+
+    if len(value) != AMOUNT_BIG_SIZE:
+        raise ValueError(
+            f"contract locked-funds value must be {AMOUNT_BIG_SIZE} bytes, got {len(value)}"
+        )
+
+    contract_id = key[:CONTRACT_ID_SIZE]
+    asset_id = int.from_bytes(
+        key[_CONTRACT_LOCKED_FUNDS_PREFIX_SIZE:],
+        byteorder="big",
+        signed=False,
+    )
+    amount_hi = int.from_bytes(
+        value[:AMOUNT_BIG_COMPONENT_SIZE],
+        byteorder="big",
+        signed=False,
+    )
+    amount_lo = int.from_bytes(
+        value[AMOUNT_BIG_COMPONENT_SIZE:],
+        byteorder="big",
+        signed=False,
+    )
+
+    return contract_id, asset_id, (amount_hi << 64) | amount_lo
 
 
 def extension_bits(version: int) -> int:
