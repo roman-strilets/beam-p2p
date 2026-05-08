@@ -10,6 +10,7 @@ from .codec import (
     encode_contract_logs_enum_payload,
     encode_contract_vars_enum_payload,
     encode_get_assets_list_at_payload,
+    encode_get_body_payload,
     encode_get_body_pack_payload,
     encode_get_common_state_payload,
     encode_get_contract_log_proof_payload,
@@ -36,6 +37,7 @@ from .deserializers import (
     deserialize_assets_list_at_payload,
     deserialize_body_pack_payloads,
     deserialize_body_payload,
+    deserialize_new_tip_payload,
     deserialize_contract_log_proof_payload,
     deserialize_contract_logs_payload,
     deserialize_contract_var_payload,
@@ -241,6 +243,18 @@ class NodeQueryClient:
                         f"[*] {self.endpoint} ignored {message_name(message_type)} ({len(payload)}B)"
                     )
 
+    def wait_for_tip(self, *, timeout: float | None = None) -> BlockHeader:
+        """Wait for the next ``NewTip`` message and return the decoded header."""
+
+        _, payload = self.recv_until(
+            expected={MessageType.NEW_TIP},
+            timeout=timeout,
+        )
+        return deserialize_new_tip_payload(
+            payload,
+            self.connection.peer_fork_hashes,
+        )
+
     def _request(
         self, request_type: MessageType, expected_type: MessageType, payload: bytes
     ) -> bytes:
@@ -379,7 +393,14 @@ class NodeQueryClient:
         )
         if message_type == MessageType.BODY:
             return [deserialize_body_payload(payload, headers[0])]
-        return deserialize_body_pack_payloads(payload, headers)
+        blocks = deserialize_body_pack_payloads(payload, headers)
+        if len(blocks) != len(headers):
+            raise RuntimeError(
+                "requested block range "
+                f"{plan.start_height}-{plan.stop_height}, node returned {len(blocks)} "
+                f"body payload(s) for {len(headers)} header(s)"
+            )
+        return blocks
 
     def get_state_summary(self) -> StateSummary:
         """
@@ -388,6 +409,24 @@ class NodeQueryClient:
         return deserialize_state_summary_payload(
             self._request(MessageType.GET_STATE_SUMMARY, MessageType.STATE_SUMMARY, b"")
         )
+
+    def get_treasury_payload(self) -> bytes:
+        """
+        Fetch the Beam treasury eternal payload via the special zero-ID body request.
+        """
+        payload = self._request(
+            MessageType.GET_BODY,
+            MessageType.BODY,
+            encode_get_body_payload(0, ZERO_HASH),
+        )
+        reader = BufferReader(payload)
+        reader.read_byte_buffer()
+        eternal = reader.read_byte_buffer()
+        if reader.remaining != 0:
+            raise DeserializationError(
+                f"{reader.remaining} trailing byte(s) left after treasury Body parse"
+            )
+        return eternal
 
     def get_shielded_outputs_at(self, *, height: int) -> int:
         """

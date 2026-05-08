@@ -3,21 +3,40 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 
-from beam_p2p import MessageType, message_name
-from beam_p2p.deserializers import (
+from .protocol import MessageType, message_name
+from .deserializers import (
     BufferReader,
     DeserializationError,
     deserialize_input,
     deserialize_output,
     split_body_pack_payload,
 )
-from beam_p2p.protocol_models import BlockOutput, TxOutput
+from .protocol_models import BlockOutput, TxOutput
 
 
 KERNEL_SUBTYPE_STD = 1
 TREASURY_AMOUNT_BYTES = 16
 TREASURY_ASSET_ID_BYTES = 4
+
+
+@dataclass(frozen=True)
+class TreasuryGroup:
+    """One decoded Beam treasury group."""
+
+    outputs: tuple[BlockOutput, ...]
+    value_groth: int
+    asset_id: int
+    release_height: int
+
+
+@dataclass(frozen=True)
+class TreasuryData:
+    """Decoded Beam treasury payload."""
+
+    custom_message: str
+    groups: tuple[TreasuryGroup, ...]
 
 
 def treasury_payload_sha256(payload: bytes) -> str:
@@ -45,20 +64,43 @@ def extract_body_buffers(message_type: MessageType, payload: bytes) -> tuple[byt
 
 def deserialize_treasury_payload(payload: bytes) -> list[BlockOutput]:
     """Deserialize a Beam treasury blob into seed outputs."""
+    return [output for group in deserialize_treasury_data(payload).groups for output in group.outputs]
+
+
+def deserialize_treasury_data(payload: bytes) -> TreasuryData:
+    """Deserialize a Beam treasury blob into structured group data."""
     reader = BufferReader(payload)
-    reader.read_byte_buffer()
+    custom_message = reader.read_byte_buffer().decode("utf-8", errors="replace")
 
     group_count = reader.read_var_uint()
-    outputs: list[BlockOutput] = []
+    groups: list[TreasuryGroup] = []
     for _ in range(group_count):
-        outputs.extend(_deserialize_treasury_group_outputs(reader))
+        groups.append(_deserialize_treasury_group(reader))
 
     if reader.remaining != 0:
         raise DeserializationError(
             f"{reader.remaining} trailing byte(s) left after treasury parse"
         )
 
-    return outputs
+    return TreasuryData(custom_message=custom_message, groups=tuple(groups))
+
+
+def treasury_amount_at_height(
+    data: TreasuryData,
+    height: int,
+    *,
+    asset_id: int = 0,
+) -> int:
+    """Return the cumulative treasury amount released at or before ``height``."""
+
+    if height < 0:
+        return 0
+
+    return sum(
+        group.value_groth
+        for group in data.groups
+        if group.asset_id == asset_id and group.release_height <= height
+    )
 
 
 def _extract_single_body_buffers(payload: bytes) -> tuple[bytes, bytes]:
@@ -74,10 +116,15 @@ def _extract_single_body_buffers(payload: bytes) -> tuple[bytes, bytes]:
     return perishable, eternal
 
 
-def _deserialize_treasury_group_outputs(reader: BufferReader) -> list[BlockOutput]:
+def _deserialize_treasury_group(reader: BufferReader) -> TreasuryGroup:
     outputs = _deserialize_treasury_transaction_outputs(reader)
-    _skip_treasury_group_value(reader)
-    return outputs
+    value_groth, asset_id = _read_treasury_group_value(reader)
+    return TreasuryGroup(
+        outputs=tuple(outputs),
+        value_groth=value_groth,
+        asset_id=asset_id,
+        release_height=_treasury_group_release_height(outputs),
+    )
 
 
 def _deserialize_treasury_transaction_outputs(reader: BufferReader) -> list[BlockOutput]:
@@ -101,11 +148,24 @@ def _deserialize_treasury_transaction_outputs(reader: BufferReader) -> list[Bloc
     return outputs
 
 
-def _skip_treasury_group_value(reader: BufferReader) -> None:
+def _read_treasury_group_value(reader: BufferReader) -> tuple[int, int]:
     value = reader.read_bytes(TREASURY_AMOUNT_BYTES)
     if value == (b"\xff" * TREASURY_AMOUNT_BYTES):
-        reader.read_bytes(TREASURY_AMOUNT_BYTES)
-        reader.read_bytes(TREASURY_ASSET_ID_BYTES)
+        return (
+            int.from_bytes(reader.read_bytes(TREASURY_AMOUNT_BYTES), byteorder="big"),
+            int.from_bytes(reader.read_bytes(TREASURY_ASSET_ID_BYTES), byteorder="big"),
+        )
+    return int.from_bytes(value, byteorder="big"), 0
+
+
+def _treasury_group_release_height(outputs: list[BlockOutput]) -> int:
+    if not outputs:
+        return 0
+
+    release_heights = [output.incubation for output in outputs if output.incubation is not None]
+    if not release_heights:
+        return 0
+    return min(release_heights)
 
 
 def _skip_kernel(reader: BufferReader, *, assume_std: bool) -> None:

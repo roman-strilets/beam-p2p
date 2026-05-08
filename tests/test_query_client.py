@@ -4,12 +4,14 @@ from beam_p2p.codec import (
     encode_bool,
     encode_byte_buffer,
     encode_get_assets_list_at_payload,
+    encode_get_body_payload,
     encode_get_proof_kernel3_payload,
     encode_height_range,
     encode_uint,
 )
 from beam_p2p.protocol import MessageType
-from beam_p2p.query_client import NodeQueryClient
+from beam_p2p.protocol_models import BlockHeader, DecodedBlock, TxCounts
+from beam_p2p.query_client import BodyFetchPlan, NodeQueryClient
 
 
 def _asset_full_payload(*, asset_id: int) -> bytes:
@@ -39,6 +41,26 @@ def _header_pack_payload(*, start_height: int) -> bytes:
             b"\x55" * 8,
         )
     )
+
+
+def _new_tip_payload(*, height: int) -> bytes:
+    return b"".join(
+        (
+            encode_uint(height),
+            b"\x11" * 32,
+            b"\x00" * 32,
+            b"\x22" * 32,
+            b"\x33" * 32,
+            encode_uint(123456),
+            b"\x44" * 104,
+            encode_uint(0),
+            b"\x55" * 8,
+        )
+    )
+
+
+def _body_payload(*, perishable: bytes = b"", eternal: bytes = b"") -> bytes:
+    return encode_byte_buffer(perishable) + encode_byte_buffer(eternal)
 
 
 class FakeConnection:
@@ -154,3 +176,110 @@ def test_request_headers_handles_ping_while_waiting() -> None:
         (MessageType.ENUM_HDRS, encode_height_range(12, 12)),
         (MessageType.PONG, b""),
     ]
+
+
+def test_wait_for_tip_handles_ping_while_waiting() -> None:
+    connection = FakeConnection(
+        [
+            (MessageType.PING, b""),
+            (MessageType.NEW_TIP, _new_tip_payload(height=12)),
+        ]
+    )
+    client = NodeQueryClient(connection, request_timeout=1.0, verbose=False)
+
+    header = client.wait_for_tip()
+
+    assert header.height == 12
+    assert header.previous_hash == ("11" * 32)
+    assert header.timestamp == 123456
+    assert connection.sent == [(MessageType.PONG, b"")]
+
+
+def test_get_treasury_payload_requests_zero_body_and_extracts_eternal() -> None:
+    connection = FakeConnection(
+        [
+            (MessageType.BODY, _body_payload(perishable=b"ignored", eternal=b"treasury")),
+        ]
+    )
+    client = NodeQueryClient(connection, request_timeout=1.0, verbose=False)
+
+    payload = client.get_treasury_payload()
+
+    assert payload == b"treasury"
+    assert connection.sent == [
+        (MessageType.GET_BODY, encode_get_body_payload(0, b"\x00" * 32)),
+    ]
+
+
+def test_fetch_blocks_rejects_partial_body_pack(monkeypatch) -> None:
+    connection = FakeConnection([])
+    client = NodeQueryClient(connection, request_timeout=1.0, verbose=False)
+    headers = [
+        BlockHeader(
+            height=12,
+            hash="11" * 32,
+            previous_hash="22" * 32,
+            chainwork="00" * 32,
+            kernels="33" * 32,
+            definition="44" * 32,
+            timestamp=123456,
+            packed_difficulty=0,
+            difficulty=1.0,
+            rules_hash=None,
+            pow_indices_hex="55" * 104,
+            pow_nonce_hex="66" * 8,
+        ),
+        BlockHeader(
+            height=13,
+            hash="77" * 32,
+            previous_hash="11" * 32,
+            chainwork="00" * 32,
+            kernels="88" * 32,
+            definition="99" * 32,
+            timestamp=123457,
+            packed_difficulty=0,
+            difficulty=1.0,
+            rules_hash=None,
+            pow_indices_hex="aa" * 104,
+            pow_nonce_hex="bb" * 8,
+        ),
+    ]
+    partial_blocks = [
+        DecodedBlock(
+            header=headers[0],
+            inputs=[],
+            outputs=[],
+            counts=TxCounts(inputs=0, outputs=0, kernels=0, kernels_mixed=False),
+            kernels=[],
+            offset=None,
+            raw_payload=None,
+        )
+    ]
+
+    monkeypatch.setattr(client, "request_headers", lambda **_: headers)
+    monkeypatch.setattr(
+        client,
+        "request_body_range_payload",
+        lambda **_: (MessageType.BODY_PACK, b"ignored"),
+    )
+    monkeypatch.setattr(
+        "beam_p2p.query_client.deserialize_body_pack_payloads",
+        lambda payload, decoded_headers: partial_blocks,
+    )
+
+    try:
+        client.fetch_blocks(
+            plan=BodyFetchPlan(
+                start_height=12,
+                stop_height=13,
+                flag_perishable=0,
+                flag_eternal=0,
+                block0=0,
+                horizon_lo1=0,
+                horizon_hi1=0,
+            )
+        )
+    except RuntimeError as exc:
+        assert "node returned 1 body payload(s) for 2 header(s)" in str(exc)
+    else:
+        raise AssertionError("expected fetch_blocks to reject partial BodyPack data")
